@@ -22,7 +22,8 @@
         <select id="levelSelect">
           <option value="1">レベル1（かんたん）</option>
           <option value="2" selected>レベル2（ふつう）</option>
-          <option value="3">レベル3（つよい）</option>
+          <option value="3">レベル3（つよい・約5秒）</option>
+          <option value="4">レベル4（最強・最大50秒）</option>
         </select>
       </label>
       <label>時間制限（1手）
@@ -42,6 +43,7 @@
   <div id="statusbar">
     <span id="turnIndicator"><span class="ball white"></span>白の番です</span>
     <span id="timerDisplay" class="hidden"></span>
+    <span id="thinkDisplay" class="hidden"></span>
     <span id="keyBufDisplay" class="hidden"></span>
   </div>
 
@@ -64,6 +66,7 @@
   </footer>
 
   <script src="lib/three.min.js"></script>
+  <script src="js/engine.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

@@ -202,7 +202,7 @@
       return pool[(Math.random() * pool.length) | 0];
     }
 
-    var depth = (level === 2) ? 2 : 4;
+    var depth = 2;   // レベル2。レベル3以上は engine.js（Worker）が担当する
     var best = -Infinity, bestCols = [];
     for (i = 0; i < COL_ORDER.length; i++) {
       col = COL_ORDER[i];
@@ -490,14 +490,130 @@
   function maybeCpuMove() {
     if (!isCpuTurn() || falling) return;
     clearTimeout(cpuTimer);
-    cpuTimer = setTimeout(function () {
-      if (!isCpuTurn() || falling) return;
-      var col = cpuChooseMove(board, settings.level);
+    if (settings.level <= 2) {
+      cpuTimer = setTimeout(function () {
+        if (!isCpuTurn() || falling) return;
+        var col = cpuChooseMove(board, settings.level);
+        if (col >= 0) tryMove(col);
+      }, 450);
+    } else {
+      cpuTimer = setTimeout(startEngineSearch, 250);
+    }
+  }
+
+  // ---------- 探索エンジン（レベル3以上・Worker で思考） ----------
+  var thinkDisplay = document.getElementById('thinkDisplay');
+  var engineWorker = null;
+  var engineSearchId = 0;       // 古い探索結果を捨てるためのトークン
+  var cpuThinking = false;
+  var syncEngine = null;        // Worker が使えない環境用のフォールバック
+
+  function makeEngineWorker() {
+    try {
+      var code =
+        'var API = (' + SCORE4_ENGINE.toString() + ')();\n' +
+        'self.onmessage = function (e) {\n' +
+        '  var m = e.data;\n' +
+        '  if (m.type !== "search") return;\n' +
+        '  var r = API.search(m.history, m.opts, function (p) {\n' +
+        '    p.type = "progress"; p.id = m.id; self.postMessage(p);\n' +
+        '  });\n' +
+        '  r.type = "result"; r.id = m.id; self.postMessage(r);\n' +
+        '};\n';
+      var url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+      var w = new Worker(url);
+      URL.revokeObjectURL(url);
+      return w;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function showThinking(text) {
+    thinkDisplay.textContent = text;
+    thinkDisplay.classList.remove('hidden');
+  }
+  function hideThinking() {
+    thinkDisplay.classList.add('hidden');
+  }
+
+  function cancelCpuSearch() {
+    engineSearchId++;
+    clearTimeout(cpuTimer);
+    if (cpuThinking && engineWorker) {
+      engineWorker.terminate();   // 探索は中断できないので Worker ごと破棄
+      engineWorker = null;
+    }
+    cpuThinking = false;
+    hideThinking();
+  }
+
+  function engineBudgetMs() {
+    var budget = (settings.level >= 4) ? 50000 : 5000;
+    if (settings.timeLimit > 0) {
+      // 落下アニメーション等の余裕をみて制限時間内に収める
+      budget = Math.max(400, Math.min(budget, settings.timeLimit * 1000 - 2500));
+    }
+    return budget;
+  }
+
+  function onEngineProgress(p) {
+    showThinking('CPU思考中… 深さ' + p.depth +
+      '（' + (p.elapsedMs / 1000).toFixed(1) + '秒・' +
+      (p.nodes >= 1e6 ? (p.nodes / 1e6).toFixed(1) + 'M' : ((p.nodes / 1e3) | 0) + 'k') + '局面）');
+  }
+
+  function onEngineResult(res) {
+    cpuThinking = false;
+    hideThinking();
+    if (!isCpuTurn() || falling || gameState !== 'playing') return;
+    if (res.col >= 0 && board.canDrop(res.col)) {
+      tryMove(res.col);
+    } else {
+      var col = cpuChooseMove(board, 2);   // 万一に備えたフォールバック
       if (col >= 0) tryMove(col);
-    }, 450);
+    }
+  }
+
+  function startEngineSearch() {
+    if (!isCpuTurn() || falling || gameState !== 'playing') return;
+    var id = ++engineSearchId;
+    cpuThinking = true;
+    showThinking('CPU思考中…');
+    var history = board.history.map(function (m) { return m.col; });
+    var opts = { timeMs: engineBudgetMs(), maxDepth: 30 };
+
+    if (engineWorker === null) engineWorker = makeEngineWorker();
+    if (engineWorker) {
+      engineWorker.onmessage = function (e) {
+        var m = e.data;
+        if (m.id !== engineSearchId) return;     // 古い探索の結果は捨てる
+        if (m.type === 'progress') onEngineProgress(m);
+        else if (m.type === 'result') onEngineResult(m);
+      };
+      engineWorker.onerror = function () {
+        // Worker 内エラー時はフォールバックで手を返す
+        if (id !== engineSearchId) return;
+        engineWorker.terminate();
+        engineWorker = null;
+        onEngineResult({ col: -1 });
+      };
+      engineWorker.postMessage({ type: 'search', id: id, history: history, opts: opts });
+    } else {
+      // Worker が作れない環境: メインスレッドで短めに探索（UI は固まる）
+      setTimeout(function () {
+        if (id !== engineSearchId) return;
+        if (!syncEngine) syncEngine = SCORE4_ENGINE();
+        opts.timeMs = Math.min(opts.timeMs, 8000);
+        var r = syncEngine.search(history, opts, null);
+        if (id !== engineSearchId) return;
+        onEngineResult(r);
+      }, 60);
+    }
   }
 
   function endGame(winner, reason, line) {
+    cancelCpuSearch();
     gameState = 'over';
     timerActive = false;
     timerDisplay.classList.add('hidden');
@@ -562,7 +678,7 @@
 
   function undoMove() {
     if (falling || board.history.length === 0) return;
-    clearTimeout(cpuTimer);
+    cancelCpuSearch();
     clearWinMarkers();
     overlay.classList.add('hidden');
     if (settings.mode === 'pvp') {
@@ -581,7 +697,7 @@
   }
 
   function newGame() {
-    clearTimeout(cpuTimer);
+    cancelCpuSearch();
     clearWinMarkers();
     while (board.history.length > 0) undoOnce();
     falling = null;
@@ -726,6 +842,10 @@
   });
   levelSelect.addEventListener('change', function () {
     settings.level = parseInt(levelSelect.value, 10);
+    if (isCpuTurn()) {           // 思考中に強さが変わったら読み直す
+      cancelCpuSearch();
+      maybeCpuMove();
+    }
   });
   timeSelect.addEventListener('change', function () {
     settings.timeLimit = parseInt(timeSelect.value, 10);
@@ -798,6 +918,8 @@
     newGame: newGame,
     lines: LINES,
     isBusy: function () { return !!falling; },
+    isThinking: function () { return cpuThinking; },
+    cpuChooseMove: cpuChooseMove,
     state: function () { return { gameState: gameState, winner: winnerInfo, history: board.history.slice() }; }
   };
 })();
