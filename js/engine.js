@@ -1,12 +1,17 @@
 /* =========================================================
- * 立体四目並べ 思考エンジン
+ * 立体四目並べ 思考エンジン（ビットボード版）
  *
  * - 反復深化 + αβ探索（ネガマックス）
+ * - ビットボード（32bit × 2 ワードで 64 マスを表現）
+ *     occ  : 両者の石の占有マス
+ *     P    : 各列の着地マス（次に玉が落ちるマス）
+ *     thrW / thrB : リーチマス（そこを埋めると 4 連が完成するマス）を
+ *                   着手のたびに差分更新。即勝ち・受け強制・両狙いの
+ *                   判定が「リーチマス AND 着地マス」の数命令で終わる
  * - 置換表（Zobrist ハッシュ）
- * - キラームーブ / 履歴ヒューリスティックによる手順前後の最適化
+ * - キラームーブ / 履歴ヒューリスティック
  * - ラインごとの玉数を差分更新する軽量評価関数
- * - 即勝ち / 相手の即勝ち（受け強制）をノードごとに静的検出し、
- *   受けが 1 通りしかない局面は深さを消費せずに読み進める
+ * - 序盤定石: 初手〜4手目は隅が最善
  *
  * この関数全体を Worker のソースとして toString() で埋め込めるよう、
  * 外部依存を一切持たない即時実行可能な形で書いてある。
@@ -23,7 +28,9 @@ function SCORE4_ENGINE() {
   // ---------- 勝利ライン列挙（main.js と同じ idx = x + z*4 + y*16） ----------
   var LINE_COUNT = 0;
   var CELL_LINES_OFF = new Int32Array(CELLS + 1);
-  var CELL_LINES;
+  var CELL_LINES;                 // セル → そのセルを通るライン ID（平坦化）
+  var LINE_CELLS;                 // ライン ID → 4 セル（平坦化）
+  var LPC = new Int32Array(CELLS); // セルを通るライン数（手の並べ替えに使用）
   (function buildLines() {
     var dirs = [];
     for (var dx = -1; dx <= 1; dx++)
@@ -35,7 +42,7 @@ function SCORE4_ENGINE() {
           if (dx === 0 && dz === 0 && dy < 0) continue;
           dirs.push([dx, dy, dz]);
         }
-    var per = [];
+    var per = [], cellsOf = [];
     for (var i = 0; i < CELLS; i++) per.push([]);
     for (var x = 0; x < N; x++)
       for (var z = 0; z < N; z++)
@@ -46,17 +53,31 @@ function SCORE4_ENGINE() {
             if (y + d[1] * 3 < 0 || y + d[1] * 3 >= N) continue;
             if (z + d[2] * 3 < 0 || z + d[2] * 3 >= N) continue;
             var id = LINE_COUNT++;
-            for (var s = 0; s < 4; s++)
-              per[(x + d[0] * s) + (z + d[2] * s) * N + (y + d[1] * s) * N * N].push(id);
+            for (var s = 0; s < 4; s++) {
+              var cc = (x + d[0] * s) + (z + d[2] * s) * N + (y + d[1] * s) * N * N;
+              per[cc].push(id);
+              cellsOf.push(cc);
+            }
           }
     var off = 0;
-    for (i = 0; i < CELLS; i++) { CELL_LINES_OFF[i] = off; off += per[i].length; }
+    for (i = 0; i < CELLS; i++) { CELL_LINES_OFF[i] = off; off += per[i].length; LPC[i] = per[i].length; }
     CELL_LINES_OFF[CELLS] = off;
     CELL_LINES = new Int16Array(off);
+    LINE_CELLS = new Int8Array(LINE_COUNT * 4);
     var pos = 0;
     for (i = 0; i < CELLS; i++)
       for (k = 0; k < per[i].length; k++) CELL_LINES[pos++] = per[i][k];
+    for (i = 0; i < cellsOf.length; i++) LINE_CELLS[i] = cellsOf[i];
   })();
+
+  // ---------- ビット演算ユーティリティ ----------
+  function pop32(x) {
+    x = x - ((x >>> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+    x = (x + (x >>> 4)) & 0x0f0f0f0f;
+    return Math.imul(x, 0x01010101) >>> 24;
+  }
+  function ctz32(x) { return 31 - Math.clz32(x & -x); }
 
   // ---------- Zobrist ハッシュ ----------
   var ZA = new Uint32Array(CELLS * 2), ZB = new Uint32Array(CELLS * 2);
@@ -81,10 +102,17 @@ function SCORE4_ENGINE() {
 
   // ---------- 局面状態 ----------
   var heights = new Int8Array(COLS);
-  var cntW = new Int8Array(LINE_COUNT), cntB = new Int8Array(LINE_COUNT);
-  var S = 0;                       // 白から見た評価値（差分更新）
+  // ラインごとの玉数を 1 バイトにパック: CNT[l] = (白の数 << 3) | 黒の数
+  // 白 +1 は +8、黒 +1 は +1。CONTRIB の添字にそのまま使える
+  var CNT = new Int8Array(LINE_COUNT);
+  var S = 0;                        // 白から見た評価値（差分更新）
   var hashA = 0, hashB = 0;
   var moveCnt = 0;
+  // ビットボード（lo: セル 0..31, hi: セル 32..63）
+  var occLo = 0, occHi = 0;         // 占有マス（両者）
+  var PLo = 0, PHi = 0;             // 着地マス（各列の次の空きマス）
+  var thrLo = [0, 0], thrHi = [0, 0];          // [白, 黒] のリーチマス
+  var thrCnt = [new Int8Array(CELLS), new Int8Array(CELLS)];  // 同一マスの多重リーチ数
 
   // ライン中の玉数 → 評価値。両者の玉が混在するラインは 0
   var WT = [0, 2, 12, 96, 0];
@@ -94,8 +122,33 @@ function SCORE4_ENGINE() {
       CONTRIB[(w0 << 3) | b0] = (w0 > 0 && b0 > 0) ? 0 : (w0 > 0 ? WT[w0] : -WT[b0]);
 
   function resetPosition() {
-    heights.fill(0); cntW.fill(0); cntB.fill(0);
+    heights.fill(0); CNT.fill(0);
     S = 0; hashA = 0; hashB = 0; moveCnt = 0;
+    occLo = 0; occHi = 0;
+    PLo = 0x0000FFFF; PHi = 0;       // 初期の着地マスは各列の最下段（セル 0..15）
+    thrLo[0] = thrLo[1] = 0; thrHi[0] = thrHi[1] = 0;
+    thrCnt[0].fill(0); thrCnt[1].fill(0);
+  }
+
+  function thrInc(p, cell) {
+    if (thrCnt[p][cell]++ === 0) {
+      if (cell < 32) thrLo[p] |= (1 << cell); else thrHi[p] |= (1 << (cell - 32));
+    }
+  }
+  function thrDec(p, cell) {
+    if (--thrCnt[p][cell] === 0) {
+      if (cell < 32) thrLo[p] &= ~(1 << cell); else thrHi[p] &= ~(1 << (cell - 32));
+    }
+  }
+  // ライン l の唯一の空きセルを返す（呼び出し側が空き 1 の状態を保証）
+  function emptyCellOf(l) {
+    var b4 = l << 2;
+    for (var k = 0; k < 4; k++) {
+      var cc = LINE_CELLS[b4 + k];
+      if (cc < 32) { if ((occLo & (1 << cc)) === 0) return cc; }
+      else { if ((occHi & (1 << (cc - 32))) === 0) return cc; }
+    }
+    return -1;  // 到達しない
   }
 
   function make(col, player) {          // player: 0=白, 1=黒
@@ -103,12 +156,36 @@ function SCORE4_ENGINE() {
     heights[col] = h + 1; moveCnt++;
     hashA = (hashA ^ ZA[(idx << 1) | player]) >>> 0;
     hashB = (hashB ^ ZB[(idx << 1) | player]) >>> 0;
-    var e = CELL_LINES_OFF[idx + 1];
-    for (var i = CELL_LINES_OFF[idx]; i < e; i++) {
-      var l = CELL_LINES[i], w = cntW[l], b = cntB[l];
-      S -= CONTRIB[(w << 3) | b];
-      if (player === 0) w = ++cntW[l]; else b = ++cntB[l];
-      S += CONTRIB[(w << 3) | b];
+    // 占有と着地マスの更新
+    if (idx < 32) { occLo |= (1 << idx); PLo &= ~(1 << idx); }
+    else { occHi |= (1 << (idx - 32)); PHi &= ~(1 << (idx - 32)); }
+    if (h + 1 < N) {
+      var up = idx + 16;
+      if (up < 32) PLo |= (1 << up); else PHi |= (1 << (up - 32));
+    }
+    // ライン玉数・評価値・リーチマスの差分更新
+    // CNT の特定値がリーチの遷移点になる:
+    //   白16=(w2,b0)/黒2=(w0,b2) → 自分のリーチ完成
+    //   白 3=(w0,b3)/黒24=(w3,b0) → 相手のリーチマスを埋めた
+    var e = CELL_LINES_OFF[idx + 1], i, l, c;
+    if (player === 0) {
+      for (i = CELL_LINES_OFF[idx]; i < e; i++) {
+        l = CELL_LINES[i]; c = CNT[l];
+        S -= CONTRIB[c];
+        if (c === 16) thrInc(0, emptyCellOf(l));
+        else if (c === 3) thrDec(1, idx);
+        CNT[l] = c + 8;
+        S += CONTRIB[c + 8];
+      }
+    } else {
+      for (i = CELL_LINES_OFF[idx]; i < e; i++) {
+        l = CELL_LINES[i]; c = CNT[l];
+        S -= CONTRIB[c];
+        if (c === 2) thrInc(1, emptyCellOf(l));
+        else if (c === 24) thrDec(0, idx);
+        CNT[l] = c + 1;
+        S += CONTRIB[c + 1];
+      }
     }
   }
 
@@ -117,35 +194,35 @@ function SCORE4_ENGINE() {
     heights[col] = h; moveCnt--;
     hashA = (hashA ^ ZA[(idx << 1) | player]) >>> 0;
     hashB = (hashB ^ ZB[(idx << 1) | player]) >>> 0;
-    var e = CELL_LINES_OFF[idx + 1];
-    for (var i = CELL_LINES_OFF[idx]; i < e; i++) {
-      var l = CELL_LINES[i], w = cntW[l], b = cntB[l];
-      S -= CONTRIB[(w << 3) | b];
-      if (player === 0) w = --cntW[l]; else b = --cntB[l];
-      S += CONTRIB[(w << 3) | b];
-    }
-  }
-
-  // ---------- 即勝ち / 相手の即勝ちの静的検出 ----------
-  // 各列の着地セルについて、そこを埋めると 4 連が完成するラインがあるか調べる。
-  // （3 個 + 相手 0 個のラインの空きセルは一意で、着地セルがライン上なら必ずそのセル）
-  var g_myWin = -1, g_oppN = 0, g_oppCol = -1, g_nValid = 0;
-  function scanNode(player) {
-    var myCnt = player === 0 ? cntW : cntB;
-    var opCnt = player === 0 ? cntB : cntW;
-    g_myWin = -1; g_oppN = 0; g_oppCol = -1; g_nValid = 0;
-    for (var col = 0; col < COLS; col++) {
-      var h = heights[col];
-      if (h >= N) continue;
-      g_nValid++;
-      var idx = col + (h << 4), e = CELL_LINES_OFF[idx + 1];
-      var oppHere = false;
-      for (var i = CELL_LINES_OFF[idx]; i < e; i++) {
-        var l = CELL_LINES[i];
-        if (opCnt[l] === 0 && myCnt[l] === 3) { g_myWin = col; return; }
-        if (myCnt[l] === 0 && opCnt[l] === 3) oppHere = true;
+    // リーチマスの巻き戻し（占有はまだ元のまま = emptyCellOf が make 時と一致）
+    //   白24=(w3,b0)/黒3=(w0,b3) → make で追加した自分のリーチを取り消す
+    //   白11=(w1,b3)/黒25=(w3,b1) → make で消した相手リーチを復活させる
+    var e = CELL_LINES_OFF[idx + 1], i, l, c;
+    if (player === 0) {
+      for (i = CELL_LINES_OFF[idx]; i < e; i++) {
+        l = CELL_LINES[i]; c = CNT[l];
+        S -= CONTRIB[c];
+        if (c === 24) thrDec(0, emptyCellOf(l));
+        else if (c === 11) thrInc(1, idx);
+        CNT[l] = c - 8;
+        S += CONTRIB[c - 8];
       }
-      if (oppHere) { g_oppN++; if (g_oppCol < 0) g_oppCol = col; }
+    } else {
+      for (i = CELL_LINES_OFF[idx]; i < e; i++) {
+        l = CELL_LINES[i]; c = CNT[l];
+        S -= CONTRIB[c];
+        if (c === 3) thrDec(1, emptyCellOf(l));
+        else if (c === 25) thrInc(0, idx);
+        CNT[l] = c - 1;
+        S += CONTRIB[c - 1];
+      }
+    }
+    // 占有と着地マスの復元
+    if (idx < 32) { occLo &= ~(1 << idx); PLo |= (1 << idx); }
+    else { occHi &= ~(1 << (idx - 32)); PHi |= (1 << (idx - 32)); }
+    if (h + 1 < N) {
+      var up = idx + 16;
+      if (up < 32) PLo &= ~(1 << up); else PHi &= ~(1 << (up - 32));
     }
   }
 
@@ -157,11 +234,6 @@ function SCORE4_ENGINE() {
   var HIST = new Int32Array(2 * COLS);
   var MBUF = new Int8Array(MAX_PLY * COLS);
   var SBUF = new Int32Array(MAX_PLY * COLS);
-  var CENTER = new Int32Array(COLS);
-  for (var c0 = 0; c0 < COLS; c0++) {
-    var cx = c0 & 3, cz = c0 >> 2;
-    CENTER[c0] = ((4 - (Math.abs(cx - 1.5) + Math.abs(cz - 1.5))) * 2) | 0;
-  }
 
   function negamax(depth, ply, alpha, beta, player) {
     if ((++nodes & 2047) === 0 && NOW() > deadline) throw ABORT;
@@ -183,21 +255,28 @@ function SCORE4_ENGINE() {
       }
     }
 
-    // 即勝ち・相手の即勝ちの検出（葉でも行うので静的評価が「静か」になる）
-    scanNode(player);
-    if (g_myWin >= 0) return WIN_SCORE - ply;             // 今すぐ勝てる
-    if (g_nValid === 0) return 0;                          // 満杯 → 引き分け
-    if (g_oppN >= 2) return -(WIN_SCORE - ply - 1);        // 両狙いは受からない
-    if (depth <= 0 || ply >= MAX_PLY - 2) return player === 0 ? S : -S;
+    // ビットボードによる即勝ち / 受け強制 / 両狙いの検出
+    var opp = player ^ 1;
+    if (((thrLo[player] & PLo) | (thrHi[player] & PHi)) !== 0)
+      return WIN_SCORE - ply;                              // 今すぐ勝てる
+    if (moveCnt >= CELLS) return 0;                        // 満杯 → 引き分け
+    var oLo = thrLo[opp] & PLo, oHi = thrHi[opp] & PHi;
+    var oppN = (oLo === 0 && oHi === 0) ? 0 : pop32(oLo) + pop32(oHi);
+    if (oppN >= 2) return -(WIN_SCORE - ply - 1);          // 両狙いは受からない
+    if (depth <= 0 || ply >= MAX_PLY - 2)
+      return player === 0 ? S : -S;
 
     // 候補手の生成と並べ替え
     var base = ply << 4, mn = 0, col, i;
-    if (g_oppN === 1) {
-      MBUF[base] = g_oppCol; mn = 1;                       // 受けが強制
+    if (oppN === 1) {
+      // 受けが強制（リーチマス = 着地マスなので列番号は下位 4bit）
+      MBUF[base] = (oLo !== 0 ? ctz32(oLo) : 32 + ctz32(oHi)) & 15;
+      mn = 1;
     } else {
       for (col = 0; col < COLS; col++) {
-        if (heights[col] >= N) continue;
-        var sc = HIST[(player << 4) | col] + CENTER[col];
+        var h = heights[col];
+        if (h >= N) continue;
+        var sc = HIST[(player << 4) | col] + LPC[col + (h << 4)] * 3;
         if (col === ttMove) sc += 1 << 28;
         else if (col === KILL1[ply]) sc += 1 << 20;
         else if (col === KILL2[ply]) sc += 1 << 19;
@@ -215,7 +294,6 @@ function SCORE4_ENGINE() {
     // 受けが 1 通りしかない場合は深さを消費しない（強制手延長）
     var childDepth = (mn === 1) ? depth : depth - 1;
     var best = -Infinity, bestMv = MBUF[base];
-    var opp = player ^ 1;
     for (i = 0; i < mn; i++) {
       var mv = MBUF[base + i];
       make(mv, player);
@@ -287,26 +365,32 @@ function SCORE4_ENGINE() {
       return r;
     }
 
-    // 序盤定石: 最初の 2 手は中央 4 本のどれか（探索不要）
-    if (history.length <= 1) {
-      var centers = [5, 6, 9, 10].filter(function (c) { return heights[c] < N; });
-      return result(centers[(Math.random() * centers.length) | 0], 0, 0, { book: true });
+    // 静的ショートカット: 即勝ち / 受けの強制
+    var tLo = thrLo[player] & PLo, tHi = thrHi[player] & PHi;
+    if ((tLo | tHi) !== 0)
+      return result((tLo !== 0 ? ctz32(tLo) : 32 + ctz32(tHi)) & 15, 0, WIN_SCORE, { forced: true });
+    if (moveCnt >= CELLS) return result(-1, 0, 0);
+    var opp = player ^ 1;
+    var oLo = thrLo[opp] & PLo, oHi = thrHi[opp] & PHi;
+    if ((oLo | oHi) !== 0) {
+      // 受けは 1 通り（2 つ以上狙われていたら受からないが最善の抵抗として塞ぐ）
+      return result((oLo !== 0 ? ctz32(oLo) : 32 + ctz32(oHi)) & 15, 0, 0, { forced: true });
     }
 
-    // 静的ショートカット: 即勝ち / 受けの強制
-    scanNode(player);
-    if (g_myWin >= 0) return result(g_myWin, 0, WIN_SCORE, { forced: true });
-    if (g_nValid === 0) return result(-1, 0, 0);
-    if (g_oppN >= 1) {
-      // 受けは 1 通り（2 つ以上狙われていたら受からないが最善の抵抗として塞ぐ）
-      return result(g_oppCol, 0, 0, { forced: true });
+    // 序盤定石: 初手〜4手目は隅（コーナーの最下段）が最善
+    if (history.length <= 3) {
+      var corners = [0, 3, 12, 15].filter(function (c) { return heights[c] === 0; });
+      if (corners.length > 0)
+        return result(corners[(Math.random() * corners.length) | 0], 0, 0, { book: true });
     }
 
     rootMoves.length = 0; rootScores.length = 0;
     var order = [];
     for (var col = 0; col < COLS; col++)
       if (heights[col] < N) order.push(col);
-    order.sort(function (a, b) { return CENTER[b] - CENTER[a]; });
+    order.sort(function (a, b) {
+      return LPC[b + (heights[b] << 4)] - LPC[a + (heights[a] << 4)];
+    });
     for (i = 0; i < order.length; i++) { rootMoves.push(order[i]); rootScores.push(0); }
 
     var effMaxDepth = Math.min(maxDepth, CELLS - moveCnt);
@@ -336,7 +420,43 @@ function SCORE4_ENGINE() {
     return result(bestCol, reached, bestScore);
   }
 
-  return { search: search, lineCount: LINE_COUNT };
+  // ---------- テスト用: リーチマス等の差分更新が正しいかの自己検査 ----------
+  // history を 1 手ずつ再現し、毎手ごとに全ラインからリーチマスを再計算して
+  // 差分更新の結果と比較する。戻り値 ok=false のときは step 手目で不一致。
+  function selfTest(history) {
+    resetPosition();
+    function check(step) {
+      var expLo = [0, 0], expHi = [0, 0];
+      for (var l = 0; l < LINE_COUNT; l++) {
+        var p = -1;
+        if (CNT[l] === 24) p = 0;         // 白3・黒0
+        else if (CNT[l] === 3) p = 1;     // 白0・黒3
+        if (p < 0) continue;
+        var cc = emptyCellOf(l);
+        if (cc < 32) expLo[p] |= (1 << cc); else expHi[p] |= (1 << (cc - 32));
+      }
+      var expPLo = 0, expPHi = 0;
+      for (var col = 0; col < COLS; col++) {
+        if (heights[col] >= N) continue;
+        var idx = col + (heights[col] << 4);
+        if (idx < 32) expPLo |= (1 << idx); else expPHi |= (1 << (idx - 32));
+      }
+      return expLo[0] === thrLo[0] && expHi[0] === thrHi[0] &&
+             expLo[1] === thrLo[1] && expHi[1] === thrHi[1] &&
+             expPLo === PLo && expPHi === PHi;
+    }
+    for (var i = 0; i < history.length; i++) {
+      make(history[i], i & 1);
+      if (!check(i)) return { ok: false, step: i, phase: 'make' };
+    }
+    for (i = history.length - 1; i >= 0; i--) {
+      unmake(history[i], i & 1);
+      if (!check(i)) return { ok: false, step: i, phase: 'unmake' };
+    }
+    return { ok: true };
+  }
+
+  return { search: search, lineCount: LINE_COUNT, selfTest: selfTest };
 }
 
 // ブラウザのメインスレッドから参照できるように公開（Worker 内では未定義）
