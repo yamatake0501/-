@@ -1,0 +1,178 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", Meiryo, sans-serif;
+  background: #1b2230;
+  color: #e8ecf3;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden { display: none !important; }
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  background: #232c3f;
+  border-bottom: 1px solid #38445e;
+}
+
+#topbar h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #f5d67b;
+  white-space: nowrap;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.controls label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #aab6cc;
+  white-space: nowrap;
+}
+
+.controls select {
+  background: #2e3a54;
+  color: #e8ecf3;
+  border: 1px solid #4a5a7d;
+  border-radius: 5px;
+  padding: 4px 6px;
+  font-size: 13px;
+}
+
+.controls button {
+  background: #3d5afe;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.controls button:hover { background: #536dfe; }
+.controls button:disabled { background: #45507a; color: #8b93b5; cursor: default; }
+
+#undoBtn { background: #7a4fbf; }
+#undoBtn:hover:not(:disabled) { background: #8f63d6; }
+#resetViewBtn { background: #45607a; }
+#resetViewBtn:hover { background: #567792; }
+
+#statusbar {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 7px 16px;
+  background: #202940;
+  font-size: 15px;
+  min-height: 38px;
+}
+
+#turnIndicator { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+
+.ball {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.ball.white { background: radial-gradient(circle at 35% 30%, #ffffff, #c9ccd4 60%, #9aa0ad); box-shadow: 0 0 0 1px #666 inset; }
+.ball.black { background: radial-gradient(circle at 35% 30%, #7d8494, #30343d 60%, #14161b); }
+
+#timerDisplay { font-variant-numeric: tabular-nums; font-weight: 700; color: #9fd48a; }
+#timerDisplay.warn { color: #ff8a65; }
+
+#keyBufDisplay { color: #f5d67b; font-weight: 600; }
+
+#stage {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+#stage canvas { display: block; }
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 14, 24, 0.55);
+  z-index: 20;
+}
+
+#overlayBox {
+  background: #26314a;
+  border: 1px solid #4a5a7d;
+  border-radius: 14px;
+  padding: 30px 44px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+
+#overlayMessage {
+  font-size: 26px;
+  font-weight: 700;
+  margin-bottom: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+#overlayMessage .ball { width: 26px; height: 26px; }
+
+.overlay-buttons { display: flex; gap: 12px; justify-content: center; }
+
+.overlay-buttons button {
+  background: #3d5afe;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.overlay-buttons button:hover { background: #536dfe; }
+#overlayUndoBtn { background: #7a4fbf; }
+#overlayUndoBtn:hover { background: #8f63d6; }
+#closeOverlayBtn { background: #45607a; }
+#closeOverlayBtn:hover { background: #567792; }
+
+#help {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #8b93b5;
+  background: #202940;
+  border-top: 1px solid #38445e;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  #topbar h1 { font-size: 15px; }
+  .controls { font-size: 12px; gap: 8px; }
+  #help { font-size: 10px; }
+}

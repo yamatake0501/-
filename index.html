@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>立体四目並べ</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='11' cy='11' r='8' fill='%23f2f3f5'/%3E%3Ccircle cx='21' cy='21' r='8' fill='%2323262e'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="topbar">
+    <h1>立体四目並べ</h1>
+    <div class="controls">
+      <label>モード
+        <select id="modeSelect">
+          <option value="pvp">二人対戦</option>
+          <option value="cpu-white">CPU対戦（あなた先手・白）</option>
+          <option value="cpu-black">CPU対戦（あなた後手・黒）</option>
+        </select>
+      </label>
+      <label id="levelWrap" class="hidden">CPUの強さ
+        <select id="levelSelect">
+          <option value="1">レベル1（かんたん）</option>
+          <option value="2" selected>レベル2（ふつう）</option>
+          <option value="3">レベル3（つよい）</option>
+        </select>
+      </label>
+      <label>時間制限（1手）
+        <select id="timeSelect">
+          <option value="0" selected>なし</option>
+          <option value="10">10秒</option>
+          <option value="30">30秒</option>
+          <option value="60">60秒</option>
+        </select>
+      </label>
+      <button id="newGameBtn">新しいゲーム</button>
+      <button id="undoBtn">待った</button>
+      <button id="resetViewBtn">視点リセット</button>
+    </div>
+  </header>
+
+  <div id="statusbar">
+    <span id="turnIndicator"><span class="ball white"></span>白の番です</span>
+    <span id="timerDisplay" class="hidden"></span>
+    <span id="keyBufDisplay" class="hidden"></span>
+  </div>
+
+  <div id="stage"></div>
+
+  <div id="overlay" class="hidden">
+    <div id="overlayBox">
+      <div id="overlayMessage"></div>
+      <div class="overlay-buttons">
+        <button id="rematchBtn">もう一度</button>
+        <button id="overlayUndoBtn">待った</button>
+        <button id="closeOverlayBtn">盤面を見る</button>
+      </div>
+    </div>
+  </div>
+
+  <footer id="help">
+    操作：棒をクリックで玉を落とす ／ ドラッグで視点回転 ／ ホイールで拡大縮小 ／
+    キーボード：棒番号（1〜16）を入力して Enter（2桁目が確定すると自動入力）、U＝待った、Esc＝入力取消
+  </footer>
+
+  <script src="lib/three.min.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
