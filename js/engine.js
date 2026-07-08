@@ -93,6 +93,90 @@ function SCORE4_ENGINE() {
     for (var i = 0; i < CELLS * 2; i++) { ZA[i] = rnd(); ZB[i] = rnd(); }
   })();
 
+  // ---------- 序盤定跡 ----------
+  // 定跡書「重力付き3次元4目並べは後手不敗である」（山本, 2026）に基づく。
+  // 論文の座標 (x, y) は列番号 col = x + 4y に対応する。
+  // 局面（各列の石の積み方）をキーに、盤面の 8 対称すべてへ展開して登録する。
+  var TCOL = [];    // TCOL[t][col] = 対称変換 t を施した列番号
+  (function buildTransforms() {
+    var fns = [
+      function (x, y) { return [x, y]; },
+      function (x, y) { return [y, x]; },
+      function (x, y) { return [3 - x, y]; },
+      function (x, y) { return [x, 3 - y]; },
+      function (x, y) { return [3 - x, 3 - y]; },
+      function (x, y) { return [y, 3 - x]; },
+      function (x, y) { return [3 - y, x]; },
+      function (x, y) { return [3 - y, 3 - x]; },
+    ];
+    for (var t = 0; t < 8; t++) {
+      var map = new Int8Array(COLS);
+      for (var col = 0; col < COLS; col++) {
+        var p = fns[t](col & 3, col >> 2);
+        map[col] = p[0] + 4 * p[1];
+      }
+      TCOL.push(map);
+    }
+  })();
+
+  var BOOK = {};
+  // side: 0 = 白の応手のみ登録, 1 = 黒のみ, 2 = 両方
+  // from: 登録を始める手数（それ以前の手は「文脈」であり推奨手として教えない）
+  function addBookLine(mvs, side, from) {
+    for (var t = 0; t < 8; t++) {
+      var hh = new Int8Array(COLS);
+      var chars = [];
+      for (var i = 0; i < CELLS; i++) chars.push('.');
+      for (var k = 0; k < mvs.length; k++) {
+        var tc = TCOL[t][mvs[k]];
+        if (k >= from && (side === 2 || (k & 1) === side)) {
+          var key = chars.join('');
+          var arr = BOOK[key] || (BOOK[key] = []);
+          if (arr.indexOf(tc) < 0) arr.push(tc);
+        }
+        chars[tc * 4 + hh[tc]] = (k & 1) === 0 ? 'w' : 'b';
+        hh[tc]++;
+      }
+    }
+  }
+  (function buildBook() {
+    // 本線（並行オープニング）: W(0,0) B(3,3) W(3,0) B(0,3) W(1,0) B(2,0) W(1,3)
+    // 8手目の黒は (1,0) が唯一の正着（定跡書 Table 3）。
+    // 以降は §4.4 の応酬 W(1,1) B(1,2) W(1,1) B(1,1) W(0,1) B(1,0)
+    addBookLine([0, 15, 3, 12, 1, 2, 13, 1, 5, 9, 5, 5, 4, 1], 2, 0);
+    // 8手目 B(2,0,1)（黒の最速の攻め）には白は即 (2,0,2) と受ける（§4.5 注記）
+    addBookLine([0, 15, 3, 12, 1, 2, 13, 2, 2], 0, 8);
+    // 8手目 B(1,1) への白の攻め（§4.1）: W(1,1,1) 以下、白有利の変化
+    addBookLine([0, 15, 3, 12, 1, 2, 13, 5, 5, 5, 1, 1, 4, 4], 0, 8);
+    // 8手目 B(1,2) への白の理想形（§4.2）: W(1,0) B(3,0) W(1,0) B(1,0) W(2,3)
+    addBookLine([0, 15, 3, 12, 1, 2, 13, 9, 1, 3, 1, 1, 14], 0, 8);
+    // 同変化で黒側は B(3,0) でなく B(0,0) と受けるのが改良手（§4.2 図17）
+    addBookLine([0, 15, 3, 12, 1, 2, 13, 9, 1, 0, 1, 1], 1, 9);
+    // 8手目 B(2,3) への白の攻め（§4.3）: W(1,2) から縦に圧力をかける白有利の変化
+    addBookLine([0, 15, 3, 12, 1, 2, 13, 14, 9, 5, 9, 9, 5, 5, 1, 13, 1, 1], 0, 8);
+    // 白が5手目で本線 (1,0)/(2,0) を外した場合、黒は (1,3) 型で受ける（§3.2）
+    for (var x5 = 0; x5 < COLS; x5++) {
+      if (x5 === 1 || x5 === 2 || x5 === 13 || x5 === 14) continue;
+      addBookLine([0, 15, 3, 12, x5, 13], 1, 5);
+      addBookLine([0, 15, 3, 12, x5, 13, 14, 2], 1, 7);
+    }
+    addBookLine([0, 15, 3, 12, 13, 14], 1, 5);
+    addBookLine([0, 15, 3, 12, 14, 13], 1, 5);
+  })();
+
+  // 現局面（列ごとの石の積み方）のキー文字列
+  function posKey(history) {
+    var hh = new Int8Array(COLS);
+    var chars = [];
+    for (var i = 0; i < CELLS; i++) chars.push('.');
+    for (var k = 0; k < history.length; k++) {
+      var c = history[k];
+      chars[c * 4 + hh[c]] = (k & 1) === 0 ? 'w' : 'b';
+      hh[c]++;
+    }
+    return chars.join('');
+  }
+
   // ---------- 置換表 ----------
   // info: move(4bit) | depth<<4 (6bit) | flag<<10 (1=exact, 2=lower, 3=upper)
   var TT_BITS = 21, TT_SIZE = 1 << TT_BITS, TT_MASK = TT_SIZE - 1;
@@ -226,6 +310,32 @@ function SCORE4_ENGINE() {
     }
   }
 
+  // ---------- Tポイント評価（定跡書 §2 の形勢判断） ----------
+  // Tポイント = 3段目（z=2）にあり直下（z=1）が空の決勝点（リーチマス）。
+  //   白の T ポイント → 白勝ち含み / 黒の T ポイント → 白の有無に関わらず黒勝ち含み
+  //   重複 T ポイント（同じマスが両者の決勝点）は 1 つ目が白、2 つ目以降は黒に味方する
+  // さらに黒は偶数段（z=1, z=3）の浮き決勝点を持つと終盤の埋め合いで有利になる。
+  // リーチマスをビットボードで持っているため、いずれも数命令で判定できる。
+  function tpointEval() {
+    var eb2 = (~occLo >>> 16) & 0xFFFF;            // z=1 が空の列
+    var t0 = thrHi[0] & eb2;                       // 白の T ポイント（z=2 & 直下空）
+    var t1 = thrHi[1] & eb2;                       // 黒の T ポイント
+    var bonus = 0;
+    if ((t0 | t1) !== 0) {
+      var dup = t0 & t1;
+      var w = pop32(t0 ^ dup), b = pop32(t1 ^ dup), d = pop32(dup);
+      if (b > 0) bonus -= 450 + 120 * (b - 1);     // 黒 T は白 T に優先する
+      else if (w > 0) bonus += 380 + 100 * (w - 1);
+      if (d === 1) bonus += 260;
+      else if (d >= 2) bonus -= 480;
+    }
+    // 黒の偶数段の浮き決勝点（z=1 で直下 z=0 が空 / z=3 で直下 z=2 が空）
+    var be1 = (thrLo[1] >>> 16) & (~occLo & 0xFFFF);
+    var be3 = (thrHi[1] >>> 16) & (~occHi & 0xFFFF);
+    if ((be1 | be3) !== 0) bonus -= 45 * (pop32(be1) + pop32(be3));
+    return bonus;
+  }
+
   // ---------- 探索 ----------
   var ABORT = { aborted: true };
   var nodes = 0, deadline = 0;
@@ -263,8 +373,10 @@ function SCORE4_ENGINE() {
     var oLo = thrLo[opp] & PLo, oHi = thrHi[opp] & PHi;
     var oppN = (oLo === 0 && oHi === 0) ? 0 : pop32(oLo) + pop32(oHi);
     if (oppN >= 2) return -(WIN_SCORE - ply - 1);          // 両狙いは受からない
-    if (depth <= 0 || ply >= MAX_PLY - 2)
-      return player === 0 ? S : -S;
+    if (depth <= 0 || ply >= MAX_PLY - 2) {
+      var ev = S + tpointEval();
+      return player === 0 ? ev : -ev;
+    }
 
     // 候補手の生成と並べ替え
     var base = ply << 4, mn = 0, col, i;
@@ -377,7 +489,17 @@ function SCORE4_ENGINE() {
       return result((oLo !== 0 ? ctz32(oLo) : 32 + ctz32(oHi)) & 15, 0, 0, { forced: true });
     }
 
-    // 序盤定石: 初手〜4手目は隅（コーナーの最下段）が最善
+    // 定跡データベース（局面キー・8対称展開済み）
+    var bookCand = BOOK[posKey(history)];
+    if (bookCand) {
+      var playable = [];
+      for (i = 0; i < bookCand.length; i++)
+        if (heights[bookCand[i]] < N) playable.push(bookCand[i]);
+      if (playable.length > 0)
+        return result(playable[(Math.random() * playable.length) | 0], 0, 0, { book: true });
+    }
+
+    // 定跡を外れた序盤（初手〜4手目）は隅（コーナーの最下段）が最善
     if (history.length <= 3) {
       var corners = [0, 3, 12, 15].filter(function (c) { return heights[c] === 0; });
       if (corners.length > 0)
