@@ -128,6 +128,107 @@ body {
 
 #stage canvas { display: block; }
 
+/* ---- 形勢（勝率）パネル ---- */
+#evalPanel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 244px;
+  background: rgba(29, 37, 54, 0.9);
+  border: 1px solid #3c4a68;
+  border-radius: 10px;
+  padding: 10px 12px 12px;
+  font-size: 13px;
+  color: #dbe2f0;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(3px);
+  z-index: 10;
+  user-select: none;
+}
+#evalPanel.hidden { display: none; }
+
+.eval-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.eval-title { font-weight: 700; color: #f5d67b; letter-spacing: 1px; }
+.eval-switch { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #9fb0cc; cursor: pointer; }
+.eval-switch input { cursor: pointer; }
+
+#evalBar {
+  position: relative;
+  height: 20px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: linear-gradient(#20242c, #14161b);   /* 黒側 */
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.4);
+}
+#evalBarWhite {
+  height: 100%;
+  width: 50%;
+  background: linear-gradient(#ffffff, #cfd3da);    /* 白側 */
+  transition: width 0.5s ease;
+  box-shadow: 1px 0 0 rgba(0,0,0,0.35);
+}
+.eval-baraxis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.eval-baraxis span:first-child { color: #f2f3f5; }
+.eval-baraxis span:last-child { color: #aeb6c6; }
+
+#evalTurn {
+  margin-top: 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #9fb0cc;
+}
+#evalTurn .ball { width: 13px; height: 13px; }
+
+#evalMoves { margin-top: 6px; }
+.eval-move {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+.eval-move.best .em-rod { color: #f5d67b; font-weight: 700; }
+.em-rank { width: 16px; color: #8b93b5; }
+.em-rod { width: 38px; }
+.em-bar {
+  flex: 1;
+  height: 7px;
+  background: #2b3550;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.em-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #4b7bd6, #6ea8ff);
+  transition: width 0.4s ease;
+}
+.eval-move.best .em-fill { background: linear-gradient(90deg, #d6a94b, #ffcf6e); }
+.em-pct { width: 46px; text-align: right; }
+
+#evalPanel.analyzing #evalTurn::after {
+  content: "解析中…";
+  color: #8fb8ff;
+  margin-left: 4px;
+}
+
+@media (max-width: 760px) {
+  #evalPanel { width: 200px; font-size: 12px; top: 8px; left: 8px; padding: 8px; }
+}
+
 #overlay {
   position: fixed;
   inset: 0;

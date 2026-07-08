@@ -542,6 +542,83 @@ function SCORE4_ENGINE() {
     return result(bestCol, reached, bestScore);
   }
 
+  // 解析用のルート探索。searchRoot と違い (1) その手自体が 4 連を完成させる
+  // 即勝ちを検出し、(2) 各手をフルウィンドウで評価して勝率表示用の正確な
+  // スコアを得る（αβ で刈られた上限値ではなく実値）。
+  function analyzeRoot(depth, player) {
+    var opp = player ^ 1, best = -Infinity, bestMv = -1;
+    for (var i = 0; i < rootMoves.length; i++) {
+      var mv = rootMoves[i];
+      var idx = mv + (heights[mv] << 4);
+      var win = (idx < 32) ? (thrLo[player] & (1 << idx)) : (thrHi[player] & (1 << (idx - 32)));
+      var v;
+      if (win !== 0) {
+        v = WIN_SCORE - 1;                 // この手で即 4 連（1 手勝ち）
+      } else {
+        make(mv, player);
+        v = -negamax(depth - 1, 1, -Infinity, Infinity, opp);
+        unmake(mv, player);
+      }
+      rootScores[i] = v;
+      if (v > best) { best = v; bestMv = mv; liveBestCol = mv; }
+    }
+    var order = rootMoves.map(function (m, k) { return [m, rootScores[k], k]; });
+    order.sort(function (a, b) { return (b[1] - a[1]) || (a[2] - b[2]); });
+    for (i = 0; i < order.length; i++) { rootMoves[i] = order[i][0]; rootScores[i] = order[i][1]; }
+    return { best: best, bestMv: bestMv };
+  }
+
+  // ---------- 形勢解析（勝率表示用） ----------
+  // 定跡・強制手のショートカットを使わず、全ての合法手を実際に探索して
+  // 上位手とその評価値（手番側から見た値）を返す。表示専用。
+  //   戻り値: { topMoves: [{col, score}, ...], depth, player }
+  //   score は手番側視点。詰みは ±(WIN_SCORE - ply) 相当の大きな値になる。
+  function analyze(history, opts) {
+    resetPosition();
+    for (var i = 0; i < history.length; i++) make(history[i], i & 1);
+    var player = history.length & 1;
+    var budget = (opts && opts.timeMs) || 1200;
+    var maxDepth = (opts && opts.maxDepth) || 16;
+    var start = NOW();
+    deadline = start + budget;
+    nodes = 0;
+    KILL1.fill(-1); KILL2.fill(-1); HIST.fill(0);
+
+    // 合法手を着地セルの通過ライン数で初期整列
+    rootMoves.length = 0; rootScores.length = 0;
+    var order = [];
+    for (var col = 0; col < COLS; col++) if (heights[col] < N) order.push(col);
+    if (order.length === 0) return { topMoves: [], depth: 0, player: player, full: true };
+    order.sort(function (a, b) {
+      return LPC[b + (heights[b] << 4)] - LPC[a + (heights[a] << 4)];
+    });
+    for (i = 0; i < order.length; i++) { rootMoves.push(order[i]); rootScores.push(0); }
+
+    // 完了した反復の結果だけを採用するためのスナップショット
+    var snap = [];
+    for (i = 0; i < rootMoves.length; i++) snap.push({ col: rootMoves[i], score: 0 });
+    var reached = 0;
+    var effMaxDepth = Math.min(maxDepth, CELLS - moveCnt);
+
+    for (var d = 1; d <= effMaxDepth; d++) {
+      if (d > 1 && NOW() - start > budget * 0.45) break;
+      try {
+        analyzeRoot(d, player);
+      } catch (e) {
+        if (e !== ABORT) throw e;
+        break;   // 中断した反復は破棄し、直前の完了結果を使う
+      }
+      snap = [];
+      for (i = 0; i < rootMoves.length; i++) snap.push({ col: rootMoves[i], score: rootScores[i] });
+      reached = d;
+      if (snap[0].score > WIN_THRESH || snap[0].score < -WIN_THRESH) break;
+      for (i = 0; i < HIST.length; i++) HIST[i] >>= 1;
+    }
+
+    var top = snap.slice(0, 5);
+    return { topMoves: top, depth: reached, player: player, nodes: nodes, elapsedMs: NOW() - start };
+  }
+
   // ---------- テスト用: リーチマス等の差分更新が正しいかの自己検査 ----------
   // history を 1 手ずつ再現し、毎手ごとに全ラインからリーチマスを再計算して
   // 差分更新の結果と比較する。戻り値 ok=false のときは step 手目で不一致。
@@ -578,7 +655,7 @@ function SCORE4_ENGINE() {
     return { ok: true };
   }
 
-  return { search: search, lineCount: LINE_COUNT, selfTest: selfTest };
+  return { search: search, analyze: analyze, lineCount: LINE_COUNT, selfTest: selfTest };
 }
 
 // ブラウザのメインスレッドから参照できるように公開（Worker 内では未定義）

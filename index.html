@@ -47,7 +47,23 @@
     <span id="keyBufDisplay" class="hidden"></span>
   </div>
 
-  <div id="stage"></div>
+  <div id="stage">
+    <div id="evalPanel">
+      <div class="eval-head">
+        <span class="eval-title">形勢（勝率）</span>
+        <label class="eval-switch"><input type="checkbox" id="evalToggle" checked>表示</label>
+      </div>
+      <div id="evalBar">
+        <div id="evalBarWhite"></div>
+      </div>
+      <div class="eval-baraxis">
+        <span id="evalLabelWhite"></span>
+        <span id="evalLabelBlack"></span>
+      </div>
+      <div id="evalTurn"></div>
+      <div id="evalMoves"></div>
+    </div>
+  </div>
 
   <div id="overlay" class="hidden">
     <div id="overlayBox">

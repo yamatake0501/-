@@ -466,6 +466,7 @@
       moveX: col % N, moveZ: (col / N) | 0, moveY: y
     };
     hideGhost();
+    cancelAnalysis();   // 着手中は解析結果を無効化（着地後に読み直す）
     updateStatus();
     return true;
   }
@@ -485,6 +486,7 @@
     startTurnTimer();
     updateStatus();
     maybeCpuMove();
+    requestAnalysis();
   }
 
   function maybeCpuMove() {
@@ -514,11 +516,15 @@
         'var API = (' + SCORE4_ENGINE.toString() + ')();\n' +
         'self.onmessage = function (e) {\n' +
         '  var m = e.data;\n' +
-        '  if (m.type !== "search") return;\n' +
-        '  var r = API.search(m.history, m.opts, function (p) {\n' +
-        '    p.type = "progress"; p.id = m.id; self.postMessage(p);\n' +
-        '  });\n' +
-        '  r.type = "result"; r.id = m.id; self.postMessage(r);\n' +
+        '  if (m.type === "search") {\n' +
+        '    var r = API.search(m.history, m.opts, function (p) {\n' +
+        '      p.type = "progress"; p.id = m.id; self.postMessage(p);\n' +
+        '    });\n' +
+        '    r.type = "result"; r.id = m.id; self.postMessage(r);\n' +
+        '  } else if (m.type === "analyze") {\n' +
+        '    var a = API.analyze(m.history, m.opts);\n' +
+        '    a.type = "analysis"; a.id = m.id; self.postMessage(a);\n' +
+        '  }\n' +
         '};\n';
       var url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
       var w = new Worker(url);
@@ -612,8 +618,127 @@
     }
   }
 
+  // ---------- 形勢評価の表示（勝率バー + 候補手トップ3） ----------
+  var WIN_THRESH_UI = 999000;   // engine.js の WIN_THRESH と一致
+  var WINRATE_K = 280;          // 評価値→勝率の変換の緩さ（大きいほど緩やか）
+  var evalPanel = document.getElementById('evalPanel');
+  var evalBarW = document.getElementById('evalBarWhite');
+  var evalLabelW = document.getElementById('evalLabelWhite');
+  var evalLabelB = document.getElementById('evalLabelBlack');
+  var evalTurn = document.getElementById('evalTurn');
+  var evalMoves = document.getElementById('evalMoves');
+  var evalToggle = document.getElementById('evalToggle');
+  var evalEnabled = true;
+  var analysisWorker = null;
+  var analysisId = 0;
+
+  // 評価値（手番側視点）→ 勝率[%]。詰みは 100/0、それ以外はロジスティック変換。
+  function scoreToWinRate(score) {
+    if (score >= WIN_THRESH_UI) return 100;
+    if (score <= -WIN_THRESH_UI) return 0;
+    var p = 100 / (1 + Math.exp(-score / WINRATE_K));
+    return Math.max(1, Math.min(99, p));   // 確定でない限り 100/0 にはしない
+  }
+  function fmtPct(p) {
+    return (p === 100 || p === 0) ? p + '%' : p.toFixed(1) + '%';
+  }
+
+  function cancelAnalysis() { analysisId++; }
+
+  function setEvalMessage(html) {
+    if (!evalEnabled) return;
+    evalTurn.innerHTML = html;
+    evalMoves.innerHTML = '';
+    evalBarW.style.width = '50%';
+    evalLabelW.textContent = '';
+    evalLabelB.textContent = '';
+  }
+
+  function requestAnalysis() {
+    if (!evalEnabled) return;
+    cancelAnalysis();
+    if (gameState !== 'playing' || falling) return;
+    if (isCpuTurn()) { setEvalMessage('CPU の手番です'); return; }
+    var id = analysisId;
+    var history = board.history.map(function (m) { return m.col; });
+    evalPanel.classList.add('analyzing');
+    if (analysisWorker === null) analysisWorker = makeEngineWorker();
+    if (analysisWorker) {
+      analysisWorker.onmessage = function (e) {
+        var m = e.data;
+        if (m.id !== analysisId || m.type !== 'analysis') return;
+        renderEval(m);
+      };
+      analysisWorker.onerror = function () {
+        analysisWorker.terminate(); analysisWorker = null;
+        if (id !== analysisId) return;
+        if (!syncEngine) syncEngine = SCORE4_ENGINE();
+        renderEval(syncEngine.analyze(history, { timeMs: 500, maxDepth: 10 }));
+      };
+      analysisWorker.postMessage({ type: 'analyze', id: id, history: history, opts: { timeMs: 1200, maxDepth: 16 } });
+    } else {
+      setTimeout(function () {
+        if (id !== analysisId) return;
+        if (!syncEngine) syncEngine = SCORE4_ENGINE();
+        renderEval(syncEngine.analyze(history, { timeMs: 400, maxDepth: 9 }));
+      }, 30);
+    }
+  }
+
+  function renderEval(res) {
+    if (!evalEnabled || res.id !== undefined && res.id !== analysisId) return;
+    evalPanel.classList.remove('analyzing');
+    var top = res.topMoves || [];
+    if (top.length === 0) { setEvalMessage('着手可能な手がありません'); return; }
+    var mover = res.player === 0 ? WHITE : BLACK;
+    // 局面の勝率 ＝ 最善手を指したときの手番側の勝率
+    var moverWin = scoreToWinRate(top[0].score);
+    var whiteWin = (mover === WHITE) ? moverWin : 100 - moverWin;
+    evalBarW.style.width = whiteWin.toFixed(1) + '%';
+    evalLabelW.textContent = '白 ' + fmtPct(Math.round(whiteWin * 10) / 10);
+    evalLabelB.textContent = fmtPct(Math.round((100 - whiteWin) * 10) / 10) + ' 黒';
+    evalTurn.innerHTML = ballIcon(mover) + playerName(mover) + 'の手番　最善手の候補';
+
+    var html = '';
+    var medals = ['①', '②', '③'];
+    for (var i = 0; i < Math.min(3, top.length); i++) {
+      var mv = top[i];
+      var wr = scoreToWinRate(mv.score);   // その手を選んだときの手番側の勝率
+      html += '<div class="eval-move' + (i === 0 ? ' best' : '') + '">' +
+        '<span class="em-rank">' + medals[i] + '</span>' +
+        '<span class="em-rod">棒' + (mv.col + 1) + '</span>' +
+        '<span class="em-bar"><span class="em-fill" style="width:' + wr.toFixed(1) + '%"></span></span>' +
+        '<span class="em-pct">' + fmtPct(Math.round(wr * 10) / 10) + '</span>' +
+        '</div>';
+    }
+    evalMoves.innerHTML = html;
+  }
+
+  function renderEvalFinal(winner) {
+    if (!evalEnabled) return;
+    cancelAnalysis();
+    evalPanel.classList.remove('analyzing');
+    if (winner === WHITE) { evalBarW.style.width = '100%'; evalLabelW.textContent = '白 100%'; evalLabelB.textContent = '0% 黒'; }
+    else if (winner === BLACK) { evalBarW.style.width = '0%'; evalLabelW.textContent = '白 0%'; evalLabelB.textContent = '100% 黒'; }
+    else { evalBarW.style.width = '50%'; evalLabelW.textContent = '白 50%'; evalLabelB.textContent = '50% 黒'; }
+    evalTurn.innerHTML = winner ? (ballIcon(winner) + playerName(winner) + 'の勝ち') : '引き分け';
+    evalMoves.innerHTML = '';
+  }
+
+  function setEvalEnabled(on) {
+    evalEnabled = on;
+    evalPanel.classList.toggle('hidden', !on);
+    if (on) {
+      if (gameState === 'over') renderEvalFinal(winnerInfo ? winnerInfo.winner : 0);
+      else requestAnalysis();
+    } else {
+      cancelAnalysis();
+    }
+  }
+
   function endGame(winner, reason, line) {
     cancelCpuSearch();
+    cancelAnalysis();
     gameState = 'over';
     timerActive = false;
     timerDisplay.classList.add('hidden');
@@ -626,6 +751,7 @@
       overlayMessage.textContent = '引き分けです';
     }
     overlay.classList.remove('hidden');
+    renderEvalFinal(winner);
     updateStatus();
   }
 
@@ -694,6 +820,7 @@
     startTurnTimer();
     updateStatus();
     maybeCpuMove();  // 自分が後手で初手まで戻した場合など、CPU 番なら指させる
+    requestAnalysis();
   }
 
   function newGame() {
@@ -709,6 +836,7 @@
     startTurnTimer();
     updateStatus();
     maybeCpuMove();
+    requestAnalysis();
   }
 
   // ---------- ゴースト表示（着地予告） ----------
@@ -904,10 +1032,17 @@
   }
 
   // ---------- 起動 ----------
+  if (evalToggle) {
+    evalToggle.addEventListener('change', function () { setEvalEnabled(evalToggle.checked); });
+    evalEnabled = evalToggle.checked;
+    evalPanel.classList.toggle('hidden', !evalEnabled);
+  }
+
   resize();
   updateCamera();
   updateStatus();
   startTurnTimer();
+  requestAnalysis();
   requestAnimationFrame(animate);
 
   // デバッグ・検証用に公開
@@ -920,6 +1055,7 @@
     isBusy: function () { return !!falling; },
     isThinking: function () { return cpuThinking; },
     cpuChooseMove: cpuChooseMove,
+    scoreToWinRate: scoreToWinRate,
     state: function () { return { gameState: gameState, winner: winnerInfo, history: board.history.slice() }; }
   };
 })();
