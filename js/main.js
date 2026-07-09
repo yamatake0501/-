@@ -359,6 +359,12 @@
   var blackMat = new THREE.MeshStandardMaterial({ color: 0x23262e, roughness: 0.3, metalness: 0.25 });
   var whiteWinMat = whiteMat.clone(); whiteWinMat.emissive = new THREE.Color(0x2a6b2a);
   var blackWinMat = blackMat.clone(); blackWinMat.emissive = new THREE.Color(0x2a6b2a);
+  // 直前に打った玉を強調するマテリアル（オレンジ発光）
+  var whiteLastMat = whiteMat.clone();
+  whiteLastMat.color = new THREE.Color(0xffd9b0);
+  whiteLastMat.emissive = new THREE.Color(0xff6a00); whiteLastMat.emissiveIntensity = 0.85;
+  var blackLastMat = blackMat.clone();
+  blackLastMat.emissive = new THREE.Color(0xff6a00); blackLastMat.emissiveIntensity = 1.4;
   var ghostWhiteMat = new THREE.MeshStandardMaterial({ color: 0xf2f3f5, transparent: true, opacity: 0.35, roughness: 0.4 });
   var ghostBlackMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4c, transparent: true, opacity: 0.4, roughness: 0.4 });
   var ballGeo = new THREE.SphereGeometry(BALL_R, 28, 22);
@@ -444,6 +450,138 @@
     timerDisplay.classList.toggle('warn', rest < 5);
   }
 
+  // ---------- 効果音（Web Audio で合成。外部ファイル不要） ----------
+  var audioCtx = null, soundOn = true;
+  function ensureAudio() {
+    if (!soundOn) return null;
+    if (!audioCtx) {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        audioCtx = AC ? new AC() : null;
+      } catch (e) { audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+  // 玉が盤に当たる「コッ」という打点音。白は高め・黒は低めで区別する。
+  function playPlaceSound(player) {
+    var ac = ensureAudio();
+    if (!ac) return;
+    var t = ac.currentTime;
+    var freq = player === WHITE ? 430 : 280;
+    var osc = ac.createOscillator(), g = ac.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, t);
+    osc.frequency.exponentialRampToValueAtTime(freq * 0.6, t + 0.12);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.32, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+    osc.connect(g).connect(ac.destination);
+    osc.start(t); osc.stop(t + 0.2);
+    // 立ち上がりのカチッというノイズ成分
+    var len = (ac.sampleRate * 0.03) | 0;
+    var buf = ac.createBuffer(1, len, ac.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    var n = ac.createBufferSource(); n.buffer = buf;
+    var ng = ac.createGain(); ng.gain.value = 0.1;
+    n.connect(ng).connect(ac.destination);
+    n.start(t);
+  }
+  // 勝利のアルペジオ
+  function playWinSound() {
+    var ac = ensureAudio();
+    if (!ac) return;
+    var t0 = ac.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach(function (f, i) {
+      var o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'triangle'; o.frequency.value = f;
+      var t = t0 + i * 0.12;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.28, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+      o.connect(g).connect(ac.destination);
+      o.start(t); o.stop(t + 0.4);
+    });
+  }
+
+  // ---------- 棋譜（対局記録） ----------
+  function pad(s, n) { s = String(s); while (s.length < n) s = ' ' + s; return s; }
+  function modeName() {
+    return { pvp: '二人対戦', 'cpu-white': 'CPU対戦（あなた先手・白）', 'cpu-black': 'CPU対戦（あなた後手・黒）' }[settings.mode] || settings.mode;
+  }
+  // 人が読める棋譜テキストを生成する
+  function buildKifu() {
+    var L = [];
+    L.push('立体四目並べ 棋譜');
+    L.push('日時: ' + new Date().toLocaleString());
+    L.push('モード: ' + modeName() + (settings.mode !== 'pvp' ? '（CPUレベル' + settings.level + '）' : ''));
+    if (settings.timeLimit > 0) L.push('時間制限: 1手 ' + settings.timeLimit + ' 秒');
+    L.push('先手 = 白（○）／後手 = 黒（●）　座標は (x, z, 段)');
+    L.push('');
+    L.push('手数  手番  棒番号  座標');
+    var hist = board.history;
+    for (var i = 0; i < hist.length; i++) {
+      var mv = hist[i];
+      L.push(pad(i + 1, 3) + '.  ' + (mv.player === WHITE ? '○白' : '●黒') +
+        '   ' + pad('棒' + (mv.col + 1), 4) + '   (' + mv.x + ', ' + mv.z + ', ' + mv.y + ')');
+    }
+    L.push('');
+    if (gameState === 'over' && winnerInfo) {
+      if (winnerInfo.winner) {
+        L.push('結果: ' + (winnerInfo.winner === WHITE ? '白（○）' : '黒（●）') + 'の勝ち（' +
+          (winnerInfo.reason === 'time' ? '時間切れ' : '4連完成') + '）　全' + hist.length + '手');
+      } else {
+        L.push('結果: 引き分け　全' + hist.length + '手');
+      }
+    } else {
+      L.push('（対局途中・' + hist.length + '手）');
+    }
+    L.push('');
+    L.push('棒番号列: ' + hist.map(function (m) { return m.col + 1; }).join(' '));
+    return L.join('\n');
+  }
+
+  function kifuStamp() {
+    var d = new Date(), p2 = function (x) { return pad(x, 2).replace(' ', '0'); };
+    return d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '_' + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+  }
+  function downloadKifu() {
+    var blob = new Blob([buildKifu()], { type: 'text/plain;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'yonmoku_kifu_' + kifuStamp() + '.txt';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+  function copyKifu(btn) {
+    var text = buildKifu();
+    function done() { if (btn) { var o = btn.textContent; btn.textContent = 'コピーしました'; setTimeout(function () { btn.textContent = o; }, 1400); } }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text, done); });
+    } else fallbackCopy(text, done);
+  }
+  function fallbackCopy(text, done) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand('copy'); done && done(); } catch (e) { /* モーダルのテキストから手動コピー可能 */ }
+    document.body.removeChild(ta);
+  }
+
+  var kifuModal = document.getElementById('kifuModal');
+  var kifuText = document.getElementById('kifuText');
+  function openKifuModal() {
+    if (board.history.length === 0) return;
+    kifuText.value = buildKifu();
+    kifuModal.classList.remove('hidden');
+  }
+  function closeKifuModal() { kifuModal.classList.add('hidden'); }
+  function updateKifuButtons() {
+    var has = board.history.length > 0;
+    if (kifuBtn) kifuBtn.disabled = !has;
+  }
+
   // ---------- 着手 ----------
   function tryMove(col) {
     if (gameState !== 'playing' || falling) return false;
@@ -474,6 +612,9 @@
   function onLanded() {
     var f = falling;
     falling = null;
+    updateLastHighlight();
+    var lastMv = board.history[board.history.length - 1];
+    if (lastMv) playPlaceSound(lastMv.player);
     var line = board.winLineAt(f.moveX, f.moveZ, f.moveY);
     if (line) {
       endGame(board.cells[line[0]], 'line', line);
@@ -485,6 +626,7 @@
     }
     startTurnTimer();
     updateStatus();
+    updateKifuButtons();
     maybeCpuMove();
     requestAnalysis();
   }
@@ -629,6 +771,7 @@
   var evalMoves = document.getElementById('evalMoves');
   var evalToggle = document.getElementById('evalToggle');
   var evalEnabled = true;
+  var evalShowingFinal = false;
   var analysisWorker = null;
   var analysisId = 0;
 
@@ -659,6 +802,7 @@
     cancelAnalysis();
     if (gameState !== 'playing' || falling) return;
     if (isCpuTurn()) { setEvalMessage('CPU の手番です'); return; }
+    if (evalShowingFinal) { setEvalMessage(''); evalShowingFinal = false; }  // 前局の結果表示を消す
     var id = analysisId;
     var history = board.history.map(function (m) { return m.col; });
     evalPanel.classList.add('analyzing');
@@ -687,6 +831,7 @@
 
   function renderEval(res) {
     if (!evalEnabled || res.id !== undefined && res.id !== analysisId) return;
+    evalShowingFinal = false;
     evalPanel.classList.remove('analyzing');
     var top = res.topMoves || [];
     if (top.length === 0) { setEvalMessage('着手可能な手がありません'); return; }
@@ -723,6 +868,7 @@
     else { evalBarW.style.width = '50%'; evalLabelW.textContent = '白 50%'; evalLabelB.textContent = '50% 黒'; }
     evalTurn.innerHTML = winner ? (ballIcon(winner) + playerName(winner) + 'の勝ち') : '引き分け';
     evalMoves.innerHTML = '';
+    evalShowingFinal = true;
   }
 
   function setEvalEnabled(on) {
@@ -753,6 +899,8 @@
     overlay.classList.remove('hidden');
     renderEvalFinal(winner);
     updateStatus();
+    updateKifuButtons();
+    if (winner) playWinSound();
   }
 
   function showWinLine(line) {
@@ -793,6 +941,23 @@
     winMarkers = [];
   }
 
+  // ---------- 直前に打った玉の強調 ----------
+  var lastMark = null;   // { mesh, baseMat }
+  function baseMatFor(player) { return player === WHITE ? whiteMat : blackMat; }
+  function clearLastHighlight() {
+    if (lastMark) { lastMark.mesh.material = lastMark.baseMat; lastMark = null; }
+  }
+  // 最新の玉を強調し、直前まで強調していた玉は通常マテリアルへ戻す
+  function updateLastHighlight() {
+    clearLastHighlight();
+    var n = board.history.length;
+    if (n === 0 || !ballMeshes[n - 1]) return;
+    var player = board.history[n - 1].player;
+    var mesh = ballMeshes[n - 1];
+    mesh.material = (player === WHITE) ? whiteLastMat : blackLastMat;
+    lastMark = { mesh: mesh, baseMat: baseMatFor(player) };
+  }
+
   // ---------- 待った / 新規ゲーム ----------
   function undoOnce() {
     var mv = board.undo();
@@ -817,8 +982,10 @@
     }
     gameState = 'playing';
     winnerInfo = null;
+    updateLastHighlight();
     startTurnTimer();
     updateStatus();
+    updateKifuButtons();
     maybeCpuMove();  // 自分が後手で初手まで戻した場合など、CPU 番なら指させる
     requestAnalysis();
   }
@@ -827,6 +994,7 @@
     cancelCpuSearch();
     clearWinMarkers();
     while (board.history.length > 0) undoOnce();
+    clearLastHighlight();
     falling = null;
     gameState = 'playing';
     winnerInfo = null;
@@ -835,6 +1003,7 @@
     updateKeyBufDisplay();
     startTurnTimer();
     updateStatus();
+    updateKifuButtons();
     maybeCpuMove();
     requestAnalysis();
   }
@@ -991,6 +1160,28 @@
     updateCamera();
   });
 
+  // 効果音の ON/OFF
+  var soundBtn = document.getElementById('soundBtn');
+  function updateSoundBtn() {
+    soundBtn.textContent = soundOn ? '🔊 音' : '🔇 音';
+    soundBtn.classList.toggle('off', !soundOn);
+  }
+  soundBtn.addEventListener('click', function () {
+    soundOn = !soundOn;
+    if (soundOn) ensureAudio();
+    updateSoundBtn();
+  });
+  updateSoundBtn();
+
+  // 棋譜（対局記録）
+  var kifuBtn = document.getElementById('kifuBtn');
+  kifuBtn.addEventListener('click', openKifuModal);
+  document.getElementById('overlayKifuBtn').addEventListener('click', openKifuModal);
+  document.getElementById('kifuCopyBtn').addEventListener('click', function () { copyKifu(this); });
+  document.getElementById('kifuDownloadBtn').addEventListener('click', downloadKifu);
+  document.getElementById('kifuCloseBtn').addEventListener('click', closeKifuModal);
+  kifuModal.addEventListener('click', function (e) { if (e.target === kifuModal) closeKifuModal(); });
+
   // ---------- メインループ ----------
   var GRAVITY = 55;           // 落下加速度（見た目調整用）
   var lastT = performance.now();
@@ -1041,9 +1232,16 @@
   resize();
   updateCamera();
   updateStatus();
+  updateKifuButtons();
   startTurnTimer();
   requestAnalysis();
   requestAnimationFrame(animate);
+
+  // 最初のユーザー操作で音声コンテキストを解錠（CPU 先手の音も鳴らせるように）
+  window.addEventListener('pointerdown', function unlock() {
+    ensureAudio();
+    window.removeEventListener('pointerdown', unlock);
+  }, { once: true });
 
   // デバッグ・検証用に公開
   window.game = {
@@ -1056,6 +1254,11 @@
     isThinking: function () { return cpuThinking; },
     cpuChooseMove: cpuChooseMove,
     scoreToWinRate: scoreToWinRate,
+    buildKifu: function () { return buildKifu(); },
+    lastHighlightIndex: function () {
+      if (!lastMark) return -1;
+      return ballMeshes.indexOf(lastMark.mesh);
+    },
     state: function () { return { gameState: gameState, winner: winnerInfo, history: board.history.slice() }; }
   };
 })();

@@ -77,6 +77,11 @@ body {
 #undoBtn:hover:not(:disabled) { background: #8f63d6; }
 #resetViewBtn { background: #45607a; }
 #resetViewBtn:hover { background: #567792; }
+#kifuBtn { background: #3d7a5a; }
+#kifuBtn:hover:not(:disabled) { background: #4c9670; }
+#soundBtn { background: #45607a; }
+#soundBtn:hover { background: #567792; }
+#soundBtn.off { background: #55415a; color: #c9b6d0; }
 
 #statusbar {
   display: flex;
@@ -277,6 +282,52 @@ body {
 #overlayUndoBtn:hover { background: #8f63d6; }
 #closeOverlayBtn { background: #45607a; }
 #closeOverlayBtn:hover { background: #567792; }
+
+/* ---- 棋譜モーダル ---- */
+#kifuModal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 14, 24, 0.6);
+  z-index: 30;
+}
+#kifuModal.hidden { display: none; }
+#kifuBox {
+  background: #26314a;
+  border: 1px solid #4a5a7d;
+  border-radius: 12px;
+  padding: 18px 20px;
+  width: min(520px, 92vw);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+#kifuHead { font-size: 17px; font-weight: 700; color: #f5d67b; margin-bottom: 10px; }
+#kifuText {
+  width: 100%;
+  height: 46vh;
+  resize: vertical;
+  background: #1a2133;
+  color: #dbe2f0;
+  border: 1px solid #3c4a68;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+.kifu-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+.kifu-buttons button {
+  background: #3d5afe; color: #fff; border: none; border-radius: 7px;
+  padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.kifu-buttons button:hover { background: #536dfe; }
+#kifuCopyBtn { background: #3d7a5a; }
+#kifuCopyBtn:hover { background: #4c9670; }
+#kifuCloseBtn { background: #45607a; }
+#kifuCloseBtn:hover { background: #567792; }
 
 #help {
   padding: 6px 14px;

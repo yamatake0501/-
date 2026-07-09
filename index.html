@@ -37,6 +37,8 @@
       <button id="newGameBtn">新しいゲーム</button>
       <button id="undoBtn">待った</button>
       <button id="resetViewBtn">視点リセット</button>
+      <button id="kifuBtn">棋譜</button>
+      <button id="soundBtn" class="icon-btn">🔊 音</button>
     </div>
   </header>
 
@@ -70,8 +72,21 @@
       <div id="overlayMessage"></div>
       <div class="overlay-buttons">
         <button id="rematchBtn">もう一度</button>
+        <button id="overlayKifuBtn">棋譜を見る</button>
         <button id="overlayUndoBtn">待った</button>
         <button id="closeOverlayBtn">盤面を見る</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="kifuModal" class="hidden">
+    <div id="kifuBox">
+      <div id="kifuHead">棋譜</div>
+      <textarea id="kifuText" readonly spellcheck="false"></textarea>
+      <div class="kifu-buttons">
+        <button id="kifuCopyBtn">コピー</button>
+        <button id="kifuDownloadBtn">ファイルに保存</button>
+        <button id="kifuCloseBtn">閉じる</button>
       </div>
     </div>
   </div>
