@@ -75,6 +75,8 @@ body {
 
 #undoBtn { background: #7a4fbf; }
 #undoBtn:hover:not(:disabled) { background: #8f63d6; }
+#redoBtn { background: #5a4fbf; }
+#redoBtn:hover:not(:disabled) { background: #6f63d6; }
 #resetViewBtn { background: #45607a; }
 #resetViewBtn:hover { background: #567792; }
 #kifuBtn { background: #3d7a5a; }
@@ -280,6 +282,8 @@ body {
 .overlay-buttons button:hover { background: #536dfe; }
 #overlayUndoBtn { background: #7a4fbf; }
 #overlayUndoBtn:hover { background: #8f63d6; }
+#overlayRedoBtn { background: #5a4fbf; }
+#overlayRedoBtn:hover { background: #6f63d6; }
 #closeOverlayBtn { background: #45607a; }
 #closeOverlayBtn:hover { background: #567792; }
 

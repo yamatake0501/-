@@ -404,6 +404,7 @@
   var overlay = document.getElementById('overlay');
   var overlayMessage = document.getElementById('overlayMessage');
   var undoBtn = document.getElementById('undoBtn');
+  var redoBtn = document.getElementById('redoBtn');
 
   function playerName(p) { return p === WHITE ? '白' : '黒'; }
   function ballIcon(p) { return '<span class="ball ' + (p === WHITE ? 'white' : 'black') + '"></span>'; }
@@ -423,6 +424,7 @@
       turnIndicator.innerHTML = ballIcon(p) + playerName(p) + 'の番です' + who;
     }
     undoBtn.disabled = board.history.length === 0 || !!falling;
+    if (redoBtn) redoBtn.disabled = redoStack.length === 0 || !!falling;
   }
 
   function startTurnTimer() {
@@ -586,6 +588,7 @@
   function tryMove(col) {
     if (gameState !== 'playing' || falling) return false;
     if (!board.canDrop(col)) return false;
+    redoStack.length = 0;   // 新しい手を打ったら「やり直し」の履歴は無効
     var player = board.currentPlayer();
     var y = board.drop(col);
     var p = colPos(col);
@@ -958,13 +961,34 @@
     lastMark = { mesh: mesh, baseMat: baseMatFor(player) };
   }
 
-  // ---------- 待った / 新規ゲーム ----------
-  function undoOnce() {
+  // ---------- 待った（Undo）/ やり直し（Redo）/ 新規ゲーム ----------
+  var redoStack = [];   // 取り消した手の列番号（LIFO。pop で時系列順に打ち直せる）
+
+  // 1 手戻す。record=true のとき redo 用に列番号を積む
+  function undoOnce(record) {
     var mv = board.undo();
     if (!mv) return false;
     var mesh = ballMeshes.pop();
     scene.remove(mesh);
+    if (record) redoStack.push(mv.col);
     return true;
+  }
+
+  // 1 手打ち直す（アニメーションなしで即座に配置）。戻した手の情報を返す
+  function redoOnce() {
+    if (redoStack.length === 0) return null;
+    var col = redoStack.pop();
+    if (!board.canDrop(col)) return null;   // 安全策（通常は起こらない）
+    var player = board.currentPlayer();
+    var y = board.drop(col);
+    var p = colPos(col);
+    var mesh = new THREE.Mesh(ballGeo, player === WHITE ? whiteMat : blackMat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.position.set(p.x, ballY(y), p.z);
+    scene.add(mesh);
+    ballMeshes.push(mesh);
+    return { col: col, x: col % N, z: (col / N) | 0, y: y, player: player };
   }
 
   function undoMove() {
@@ -973,12 +997,12 @@
     clearWinMarkers();
     overlay.classList.add('hidden');
     if (settings.mode === 'pvp') {
-      undoOnce();
+      undoOnce(true);
     } else {
       // CPU 戦では自分の手番に戻るまで（最大2手）戻す
       var human = (settings.mode === 'cpu-white') ? WHITE : BLACK;
-      undoOnce();
-      if (board.currentPlayer() !== human && board.history.length > 0) undoOnce();
+      undoOnce(true);
+      if (board.currentPlayer() !== human && board.history.length > 0) undoOnce(true);
     }
     gameState = 'playing';
     winnerInfo = null;
@@ -990,10 +1014,44 @@
     requestAnalysis();
   }
 
+  // やり直し（Redo）: 直前に「待った」で戻した手を打ち直す。
+  // CPU 戦では自分の手番に戻るまで（人間の手 + CPU の手）まとめて打ち直す。
+  function redoMove() {
+    if (falling || redoStack.length === 0) return;
+    cancelCpuSearch();
+    clearWinMarkers();
+    overlay.classList.add('hidden');
+    gameState = 'playing';
+    winnerInfo = null;
+    var human = (settings.mode === 'cpu-white') ? WHITE : (settings.mode === 'cpu-black') ? BLACK : -1;
+    var last = null, winLine = null, draw = false;
+    while (true) {
+      var mv = redoOnce();
+      if (!mv) break;
+      last = mv;
+      var line = board.winLineAt(mv.x, mv.z, mv.y);
+      if (line) { winLine = line; break; }
+      if (board.isFull()) { draw = true; break; }
+      if (settings.mode === 'pvp') break;              // 二人対戦は 1 手だけ
+      if (board.currentPlayer() === human) break;      // CPU 戦は自分の手番へ戻ったら止める
+      if (redoStack.length === 0) break;
+    }
+    updateLastHighlight();
+    if (last) playPlaceSound(last.player);
+    if (winLine) { endGame(board.cells[winLine[0]], 'line', winLine); return; }
+    if (draw) { endGame(0, 'draw', null); return; }
+    startTurnTimer();
+    updateStatus();
+    updateKifuButtons();
+    maybeCpuMove();       // 打ち直した結果 CPU の手番なら（redo 分を使い切っていれば）指させる
+    requestAnalysis();
+  }
+
   function newGame() {
     cancelCpuSearch();
     clearWinMarkers();
     while (board.history.length > 0) undoOnce();
+    redoStack.length = 0;
     clearLastHighlight();
     falling = null;
     gameState = 'playing';
@@ -1123,6 +1181,8 @@
       updateKeyBufDisplay();
     } else if (e.key === 'u' || e.key === 'U') {
       undoMove();
+    } else if (e.key === 'r' || e.key === 'R') {
+      redoMove();
     }
   });
 
@@ -1150,7 +1210,9 @@
   });
   document.getElementById('newGameBtn').addEventListener('click', newGame);
   undoBtn.addEventListener('click', undoMove);
+  redoBtn.addEventListener('click', redoMove);
   document.getElementById('overlayUndoBtn').addEventListener('click', undoMove);
+  document.getElementById('overlayRedoBtn').addEventListener('click', redoMove);
   document.getElementById('rematchBtn').addEventListener('click', newGame);
   document.getElementById('closeOverlayBtn').addEventListener('click', function () {
     overlay.classList.add('hidden');
@@ -1248,6 +1310,8 @@
     board: board,
     tryMove: tryMove,
     undoMove: undoMove,
+    redoMove: redoMove,
+    redoCount: function () { return redoStack.length; },
     newGame: newGame,
     lines: LINES,
     isBusy: function () { return !!falling; },
