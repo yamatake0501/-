@@ -700,7 +700,7 @@
   }
 
   function engineBudgetMs() {
-    var budget = (settings.level >= 4) ? 50000 : 5000;
+    var budget = (settings.level >= 4) ? 10000 : 5000;
     if (settings.timeLimit > 0) {
       // 落下アニメーション等の余裕をみて制限時間内に収める
       budget = Math.max(400, Math.min(budget, settings.timeLimit * 1000 - 2500));
